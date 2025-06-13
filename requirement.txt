@@ -1,0 +1,5 @@
+pandas
+fpdf
+rich
+tabulate
+pyfiglet

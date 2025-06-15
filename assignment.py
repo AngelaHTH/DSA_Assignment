@@ -1,4 +1,4 @@
-# Angela Ho Tian Hui
+# Angela Ho Tian Hui 231058z
 # Admin login is username: admin, password: admin123
 import re
 import shelve
@@ -975,7 +975,7 @@ class TrainingManagementSystem:
             system_logger.error(f"Error viewing badges for {employee.employee_id}: {str(e)}")
 
     def view_feedback(self):
-        """Display feedback in a properly formatted table using tabulate"""
+        """Display feedback in a properly formatted table with solid lines and consistent columns"""
         console.print("\n[bold blue]Programme Feedback[/bold blue]")
 
         # Collect all feedback data
@@ -996,7 +996,10 @@ class TrainingManagementSystem:
             console.print("[yellow]No feedback available.[/yellow]")
             return
 
-        # Prepare table data for tabulate
+        # Sort feedback by employee ID (ascending)
+        feedback_data.sort(key=lambda x: x['employee_id'])
+
+        # Prepare table data with proper formatting
         table_data = []
         for fb in feedback_data:
             # Convert rating to stars
@@ -1005,44 +1008,59 @@ class TrainingManagementSystem:
 
             # Clean up feedback text
             feedback_text = fb['feedback'].replace('\n', ' ').strip()
+            if len(feedback_text) > 50:
+                feedback_text = feedback_text[:47] + "..."
+
+            # Format date
+            try:
+                formatted_date = datetime.strptime(fb['date'], '%Y-%m-%d %H:%M:%S').strftime('%d %b %Y %H:%M')
+            except:
+                formatted_date = fb['date']  # Fallback if parsing fails
 
             table_data.append([
-                fb['name'],
                 fb['employee_id'],
-                fb['programme'],
+                fb['name'][:20],  # Limit name length
+                fb['programme'][:20],  # Limit programme length
                 stars,
                 feedback_text,
-                fb['date']
+                formatted_date
             ])
 
         # Define headers
         headers = [
-            "Name",
             "ID",
+            "Name",
             "Programme",
             "Rating",
             "Feedback",
             "Date"
         ]
 
-        # Print using tabulate with fancy_grid
+        # Print using pretty format with adjusted column widths
         action_logger.info("Displayed feedback records")
-        print(tabulate(table_data, headers=headers, tablefmt="fancy_grid"))
+
+        # Create custom column alignment
+        colalign = ("left", "left", "left", "left", "left", "left")
+
+        console.print(tabulate(table_data, headers=headers, tablefmt="fancy_grid",colalign=colalign))
 
     def export_data(self):
         """Export employee data with badges information"""
         console.print("\n[bold blue]Export Employee Data[/bold blue]")
 
         try:
-            # Prepare data
+            # Prepare data and sort by employee ID
             table_data = []
             with shelve.open('badges_db', flag='r') as badges_db:
-                for emp in self.employees.values():
+                # Create list of employees sorted by ID
+                sorted_employees = sorted(self.employees.values(), key=lambda emp: emp.employee_id)
+
+                for emp in sorted_employees:
                     badges = badges_db.get(str(emp.employee_id), [])
 
                     table_data.append([
-                        emp.name,
                         emp.employee_id,
+                        emp.name,
                         emp.department,
                         "Full-time" if emp.full_time_status else "Part-time",
                         emp.email,
@@ -1057,7 +1075,7 @@ class TrainingManagementSystem:
                 return
 
             # Display preview
-            headers = ["Name", "ID", "Department", "Status", "Email", "Programmes", "Badges", "Points", "Badge Names"]
+            headers = ["ID", "Name", "Department", "Status", "Email", "Programmes", "Badges", "Points", "Badge Names"]
 
             preview_table = Table(show_header=True, header_style="bold blue", show_lines=True, expand=True)
             for header in headers:
@@ -1076,7 +1094,7 @@ class TrainingManagementSystem:
             choice = self.get_input("Select export format: ")
 
             if choice == '1':
-                self.export_to_excel()
+                self.export_to_excel(sorted_employees)  # Pass sorted employees
             elif choice == '2':
                 self.export_to_pdf(table_data, headers)
 
@@ -1084,13 +1102,13 @@ class TrainingManagementSystem:
             console.print(f"[red]Error preparing export data: {str(e)}[/red]")
             system_logger.error(f"Export preparation failed: {str(e)}")
 
-    def export_to_excel(self):
+    def export_to_excel(self, sorted_employees):
         """Export employee data to Excel with all requested fields"""
         try:
-            # Prepare data with all required fields
+            # Prepare data with all required fields, already sorted
             data = []
-            with shelve.open('badges_db', flag='r') as badges_db:  # Read-only mode
-                for emp in self.employees.values():
+            with shelve.open('badges_db', flag='r') as badges_db:
+                for emp in sorted_employees:
                     # Get badge information
                     badges = badges_db.get(str(emp.employee_id), [])
                     badge_count = len(badges)
@@ -1098,8 +1116,8 @@ class TrainingManagementSystem:
                     badge_names = ", ".join(badges) if badges else "None"
 
                     data.append({
-                        'Name': emp.name,
                         'ID': emp.employee_id,
+                        'Name': emp.name,
                         'Department': emp.department,
                         'Status': 'Full-time' if emp.full_time_status else 'Part-time',
                         'Email': emp.email,
@@ -1130,9 +1148,6 @@ class TrainingManagementSystem:
             action_logger.info(f"Exported data to Excel: {export_path}")
             console.print(f"[green]Data successfully exported to:[/green] [bold]{export_path}[/bold]")
 
-            # Display preview in console
-            self.display_export_preview(data)
-
         except Exception as e:
             console.print(f"[red]Error exporting to Excel: {str(e)}[/red]")
             system_logger.error(f"Excel export failed: {str(e)}")
@@ -1155,7 +1170,7 @@ class TrainingManagementSystem:
             pdf.ln(10)
 
             # Calculate column widths
-            col_widths = [40, 15, 25, 20, 50, 40, 15, 15, 40]
+            col_widths = [15, 30, 25, 20, 50, 40, 15, 15, 40]  # Adjusted for ID first
 
             # Header row
             pdf.set_fill_color(200, 220, 255)
@@ -1164,7 +1179,7 @@ class TrainingManagementSystem:
                 pdf.cell(col_widths[i], 10, header, 1, 0, 'C', True)
             pdf.ln()
 
-            # Data rows
+            # Data rows (already sorted)
             pdf.set_font("Helvetica", '', 8)
             fill = False
             for row in table_data:

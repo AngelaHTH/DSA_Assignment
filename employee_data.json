@@ -1,1 +1,0 @@
-{"employees": {"10001": {"name": "angela", "employee_id": 10001, "email": "angela@gmail.com", "department": "IT", "full_time_status": true, "enrolled_programmes": [], "password": null, "feedback": []}}, "action_log": ["2025-06-10 20:39:22 - admin - Admin logged in", "2025-06-10 20:39:56 - admin - Added new employee: angela (ID: 10001)"]}

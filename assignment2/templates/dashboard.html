@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Training Management Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .metric-card {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px;
+            display: inline-block;
+            width: 200px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .chart-container {
+            width: 100%;
+            height: 400px;
+            margin: 20px 0;
+        }
+        .error-message {
+            color: red;
+            padding: 10px;
+            border: 1px solid red;
+            background-color: #ffeeee;
+        }
+    </style>
+</head>
+<body>
+    <h1>Training Management Dashboard</h1>
+    <p>Last updated: <span id="timestamp">{{ metrics.timestamp }}</span></p>
+
+    <div id="metrics-container">
+        <div class="metric-card">
+            <div>Total Employees</div>
+            <div class="metric-value">{{ metrics.total_employees }}</div>
+        </div>
+        <div class="metric-card">
+            <div>Active Enrollments</div>
+            <div class="metric-value">{{ metrics.active_enrollments }}</div>
+        </div>
+        <div class="metric-card">
+            <div>Completion Rate</div>
+            <div class="metric-value">{{ "%.1f"|format(metrics.completion_rate * 100) }}%</div>
+        </div>
+        <div class="metric-card">
+            <div>Pending Requests</div>
+            <div class="metric-value">{{ metrics.request_stats.total_requests }}</div>
+        </div>
+    </div>
+
+    <div class="chart-container" id="departmentChart"></div>
+    <div class="chart-container" id="programChart"></div>
+    <div class="chart-container" id="requestTypeChart"></div>
+
+    <script>
+        // Department distribution chart
+        try {
+            const deptData = {
+                labels: Object.keys({{ metrics.department_distribution|tojson|safe }}),
+                values: Object.values({{ metrics.department_distribution|tojson|safe }})
+            };
+
+            // Filter out departments with 0 employees
+            const filteredLabels = [];
+            const filteredValues = [];
+            deptData.labels.forEach((label, index) => {
+                if (deptData.values[index] > 0) {
+                    filteredLabels.push(label);
+                    filteredValues.push(deptData.values[index]);
+                }
+            });
+
+            Plotly.newPlot('departmentChart', [{
+                values: filteredValues,
+                labels: filteredLabels,
+                type: 'pie',
+                textinfo: 'label+percent',
+                insidetextorientation: 'radial',
+                hoverinfo: 'label+value+percent',
+                textposition: 'inside',
+                automargin: true
+            }], {
+                title: 'Employees by Department',
+                margin: {t: 30, b: 30, l: 30, r: 30}
+            });
+        } catch (e) {
+            console.error("Error creating department chart:", e);
+            document.getElementById('departmentChart').innerHTML =
+                '<div class="error-message">Could not display department chart. Data format may be invalid.</div>';
+        }
+
+        // Program popularity chart
+        try {
+            const programData = {
+                labels: Object.keys({{ metrics.program_popularity|tojson|safe }}),
+                values: Object.values({{ metrics.program_popularity|tojson|safe }})
+            };
+
+            // Sort programs by popularity (descending)
+            const sortedIndices = [...Array(programData.labels.length).keys()]
+                .sort((a, b) => programData.values[b] - programData.values[a]);
+            const sortedLabels = sortedIndices.map(i => programData.labels[i]);
+            const sortedValues = sortedIndices.map(i => programData.values[i]);
+
+            // Show top 10 programs
+            const topN = 10;
+            const displayLabels = sortedLabels.slice(0, topN);
+            const displayValues = sortedValues.slice(0, topN);
+
+            Plotly.newPlot('programChart', [{
+                x: displayLabels,
+                y: displayValues,
+                type: 'bar'
+            }], {
+                title: 'Top Training Programs',
+                xaxis: { title: 'Program' },
+                yaxis: { title: 'Number of Enrollments' }
+            });
+        } catch (e) {
+            console.error("Error creating program chart:", e);
+            document.getElementById('programChart').innerHTML =
+                '<div class="error-message">Could not display program chart.</div>';
+        }
+
+        // Request type chart
+        try {
+            const requestData = {
+                labels: Object.keys({{ metrics.request_stats.type_counts|tojson|safe }}),
+                values: Object.values({{ metrics.request_stats.type_counts|tojson|safe }})
+            };
+
+            Plotly.newPlot('requestTypeChart', [{
+                values: requestData.values,
+                labels: requestData.labels,
+                type: 'pie',
+                textinfo: 'label+percent',
+                insidetextorientation: 'radial'
+            }], {
+                title: 'Requests by Type'
+            });
+        } catch (e) {
+            console.error("Error creating request type chart:", e);
+            document.getElementById('requestTypeChart').innerHTML =
+                '<div class="error-message">Could not display request type chart.</div>';
+        }
+
+        // Auto-refresh every 30 seconds
+        setTimeout(() => {
+            location.reload();
+        }, 30000);
+    </script>
+</body>
+</html>

@@ -34,12 +34,18 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from cryptography.fernet import Fernet
 import tkinter as tk
 from tkinter import ttk
+from flask import Flask, render_template, jsonify
+import webbrowser
+from collections import defaultdict
+from pathlib import Path
+
 
 load_dotenv()
 
 
 # Initialize rich console with wider display
 console = Console(width=140)
+
 
 
 # Configure logging
@@ -320,6 +326,16 @@ class EmployeeRequest:
         return (f"EmployeeRequest(employee_id={self.employee_id}, type={self.request_type}, "
                 f"priority={self.priority_level}, details={self.request_details}, "
                 f"timestamp={self.timestamp.strftime('%Y-%m-%d %H:%M:%S')})")
+
+    def to_dict(self):
+        """Convert request to dictionary for serialization"""
+        return {
+            'employee_id': self.employee_id,
+            'request_type': self.request_type,
+            'priority_level': self.priority_level,
+            'request_details': self.request_details,
+            'timestamp': self.timestamp
+        }
 
 
 class EmployeeRequestQueue:
@@ -2473,12 +2489,13 @@ class TrainingManagementSystem:
         return root
 
     def save_data(self):
-        """Save employee data to disk with enrollment history"""
+        """Save employee data and request queue to disk"""
         try:
             os.makedirs('data', exist_ok=True)
             db_path = os.path.join('data', 'employee_data')
 
             with shelve.open(db_path) as db:
+                # Save employee data
                 employee_data = {}
                 for eid, emp in self.employees.items():
                     # Convert enrollment history to a serializable format
@@ -2500,18 +2517,24 @@ class TrainingManagementSystem:
                     employee_data[eid] = emp_dict
 
                 db['employees'] = employee_data
+
+                # Save request queue
+                db['request_queue'] = [req.__dict__ for req in self.request_queue.requests]
+                db['processed_requests'] = [req.__dict__ for req in self.request_queue.processed_requests]
+
         except Exception as e:
             console.print(f"[red]Error saving data: {str(e)}[/red]")
             system_logger.error(f"Data save failed: {str(e)}")
 
     def load_data(self):
-        """Load employee data including enrollment history"""
+        """Load employee data and request queue from disk"""
         try:
             db_path = os.path.join('data', 'employee_data')
             if not os.path.exists(f'{db_path}.dat'):
                 return
 
             with shelve.open(db_path, flag='r') as db:
+                # Load employee data
                 employee_data = db.get('employees', {})
                 for eid, emp_data in employee_data.items():
                     employee = Employee(
@@ -2548,6 +2571,30 @@ class TrainingManagementSystem:
                         employee.enrollment_history = history
 
                     self.employees[int(eid)] = employee
+
+                # Load request queue
+                if 'request_queue' in db:
+                    for req_dict in db['request_queue']:
+                        req = EmployeeRequest(
+                            req_dict['employee_id'],
+                            req_dict['request_type'],
+                            req_dict['priority_level'],
+                            req_dict['request_details']
+                        )
+                        req.timestamp = req_dict['timestamp']
+                        self.request_queue.add_request(req)
+
+                if 'processed_requests' in db:
+                    for req_dict in db['processed_requests']:
+                        req = EmployeeRequest(
+                            req_dict['employee_id'],
+                            req_dict['request_type'],
+                            req_dict['priority_level'],
+                            req_dict['request_details']
+                        )
+                        req.timestamp = req_dict['timestamp']
+                        self.request_queue.processed_requests.append(req)
+
         except Exception as e:
             console.print(f"[red]Error loading data: {str(e)}[/red]")
             system_logger.error(f"Data load failed: {str(e)}")
@@ -4212,121 +4259,105 @@ class TrainingManagementSystem:
             system_logger.error(f"PDF export failed: {str(e)}")
 
     def launch_external_dashboard(self):
-        """Launch an external dashboard window with visualizations"""
+        """Launch a web-based dashboard with visualizations"""
         try:
-            # Create the main window
-            dashboard_window = tk.Tk()
-            dashboard_window.title("Employee Training System - External Dashboard")
-            dashboard_window.geometry("1200x800")
+            # Create Flask app with correct template path
+            app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), 'templates'))
 
-            # Create a container frame
-            container = ttk.Frame(dashboard_window)
-            container.pack(fill=tk.BOTH, expand=True)
+            # Suppress Flask's default logging
+            log = logging.getLogger('werkzeug')
+            log.setLevel(logging.ERROR)
 
-            # Create a figure with 4 subplots
-            fig = plt.figure(figsize=(12, 8), dpi=100)
-            fig.suptitle("Employee Training System Dashboard", fontsize=16)
-
-            # Create the subplots
-            ax1 = fig.add_subplot(2, 2, 1)  # Employee status
-            ax2 = fig.add_subplot(2, 2, 2)  # Program popularity
-            ax3 = fig.add_subplot(2, 2, 3)  # Department distribution
-            ax4 = fig.add_subplot(2, 2, 4)  # Request types
-
-            # Embed the figure in the Tkinter window
-            canvas = FigureCanvasTkAgg(fig, master=container)
-            canvas.draw()
-            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
-
-            # Add a refresh button
-            refresh_btn = ttk.Button(container, text="Refresh",
-                                     command=lambda: self.update_dashboard(fig, ax1, ax2, ax3, ax4, canvas))
-            refresh_btn.pack(side=tk.BOTTOM, pady=10)
-
-            # Initial update
-            self.update_dashboard(fig, ax1, ax2, ax3, ax4, canvas)
-
-            # Start a thread for periodic updates
+            self.dashboard_app = app
             self.stop_dashboard = False
+            self.dashboard_data = {}
 
-            def periodic_update():
-                while not self.stop_dashboard and dashboard_window.winfo_exists():
-                    self.update_dashboard(fig, ax1, ax2, ax3, ax4, canvas)
-                    time.sleep(30)  # Update every 30 seconds
+            @app.route('/')
+            def dashboard():
+                try:
+                    data = self._update_dashboard_data()
+                    # Convert data to ensure JSON serialization
+                    serializable_data = {
+                        'metrics': data,
+                        'department_data': [
+                            {'department': k, 'count': v}
+                            for k, v in data['department_distribution'].items()
+                        ],
+                        'program_data': [
+                            {'program': k, 'enrollments': v}
+                            for k, v in data['program_popularity'].items()
+                        ],
+                        'badge_data': [
+                            {'badge': k, 'count': v}
+                            for k, v in data['badge_stats']['badge_distribution'].items()
+                        ]
+                    }
+                    return render_template('dashboard.html', **serializable_data)
+                except Exception as e:
+                    return f"Error generating dashboard: {str(e)}", 500
 
-            update_thread = threading.Thread(target=periodic_update, daemon=True)
-            update_thread.start()
+            @app.route('/api/dashboard')
+            def api_dashboard():
+                try:
+                    data = self._update_dashboard_data()
+                    return jsonify(data)
+                except Exception as e:
+                    return jsonify({"error": str(e)}), 500
 
-            # Handle window close
-            def on_close():
-                self.stop_dashboard = True
-                dashboard_window.destroy()
+            # Start server thread
+            def run_server():
+                app.run(port=5000, use_reloader=False)
 
-            dashboard_window.protocol("WM_DELETE_WINDOW", on_close)
-            dashboard_window.mainloop()
+            server_thread = threading.Thread(target=run_server)
+            server_thread.daemon = True
+            server_thread.start()
 
-        except Exception as e:
-            console.print(f"[red]Error launching dashboard: {str(e)}[/red]")
-            system_logger.error(f"Dashboard launch failed: {str(e)}")
+            time.sleep(1)
+            webbrowser.open('http://localhost:5000')
 
-    def update_dashboard(self, fig, ax1, ax2, ax3, ax4, canvas):
-        """Update the dashboard with current data"""
-        try:
-            # Clear all axes
-            for ax in [ax1, ax2, ax3, ax4]:
-                ax.clear()
-
-            # Get current metrics
-            metrics = self.real_time_dashboard.update_metrics()
-
-            # 1. Employee Status Pie Chart
-            full_time = metrics['full_time_employees']
-            part_time = metrics['part_time_employees']
-            labels = ['Full-Time', 'Part-Time']
-            sizes = [full_time, part_time]
-            colors = ['#66b3ff', '#99ff99']
-            ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-            ax1.set_title('Employee Status Distribution')
-            ax1.axis('equal')
-
-            # 2. Top Programs Bar Chart
-            program_stats = metrics['program_popularity']
-            if program_stats:
-                top_programs = sorted(program_stats.items(), key=lambda x: x[1], reverse=True)[:5]
-                programs, counts = zip(*top_programs)
-                y_pos = np.arange(len(programs))
-                ax2.bar(y_pos, counts, align='center', color='#ffcc99')
-                ax2.set_xticks(y_pos)
-                ax2.set_xticklabels(programs, rotation=15, ha='right')
-                ax2.set_title('Top 5 Training Programs')
-                ax2.set_ylabel('Enrollments')
-
-            # 3. Department Distribution Bar Chart
-            dept_stats = metrics['department_distribution']
-            if dept_stats:
-                departments, counts = zip(*sorted(dept_stats.items(), key=lambda x: x[1], reverse=True))
-                y_pos = np.arange(len(departments))
-                ax3.bar(y_pos, counts, align='center', color='#c2c2f0')
-                ax3.set_xticks(y_pos)
-                ax3.set_xticklabels(departments, rotation=15, ha='right')
-                ax3.set_title('Employees by Department')
-                ax3.set_ylabel('Count')
-
-            # 4. Request Types Pie Chart
-            request_stats = metrics['request_stats']['type_counts']
-            if request_stats:
-                types, counts = zip(*sorted(request_stats.items(), key=lambda x: x[1], reverse=True))
-                colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#c2c2f0']
-                ax4.pie(counts, labels=types, colors=colors, autopct='%1.1f%%', startangle=90)
-                ax4.set_title('Pending Requests by Type')
-                ax4.axis('equal')
-
-            # Adjust layout and redraw
-            fig.tight_layout()
-            canvas.draw()
+            console.print("\n[green]Dashboard launched![/green]")
 
         except Exception as e:
-            system_logger.error(f"Dashboard update failed: {str(e)}")
+            console.print(f"[red]Error: {str(e)}[/red]")
+            system_logger.error(f"Dashboard error: {str(e)}")
+
+    def _update_dashboard_data(self):
+        """Update the dashboard data structure with current metrics"""
+        metrics = self.real_time_dashboard.update_metrics()
+
+        # Calculate department breakdown with simple counts (for pie chart)
+        dept_counts = {}
+        for emp in self.employees.values():
+            dept_counts[emp.department] = dept_counts.get(emp.department, 0) + 1
+
+        # Calculate full-time vs part-time breakdown (for potential future use)
+        dept_breakdown = defaultdict(lambda: {'full_time': 0, 'part_time': 0})
+        for emp in self.employees.values():
+            if emp.full_time_status:
+                dept_breakdown[emp.department]['full_time'] += 1
+            else:
+                dept_breakdown[emp.department]['part_time'] += 1
+
+        # Convert all data to basic Python types that are JSON serializable
+        dashboard_data = {
+            'total_employees': int(metrics.get('total_employees', 0)),
+            'full_time_employees': int(metrics.get('full_time_employees', 0)),
+            'part_time_employees': int(metrics.get('part_time_employees', 0)),
+            'active_enrollments': int(metrics.get('active_enrollments', 0)),
+            'completion_rate': float(metrics.get('completion_rates', {}).get('completion_rate', 0)),
+            'request_stats': {
+                'total_requests': int(metrics.get('request_stats', {}).get('total_requests', 0)),
+                'priority_counts': dict(metrics.get('request_stats', {}).get('priority_counts', {})),
+                'type_counts': dict(metrics.get('request_stats', {}).get('type_counts', {}))
+            },
+            'program_popularity': dict(metrics.get('program_popularity', {})),
+            'department_distribution': dict(dept_counts),  # Simple counts for pie chart
+            'department_breakdown': dict(dept_breakdown),  # Detailed breakdown for other visualizations
+            'badge_stats': dict(metrics.get('badge_stats', {})),
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+        return dashboard_data
 
     def manage_badges(self):
         """Admin function to add/remove badges for employees"""
@@ -4586,7 +4617,7 @@ class TrainingManagementSystem:
             console.print("13. View Pending Request \n14. Manage Requests\n15. View Feedback\n16. Manage Badges")
             console.print("17. Export Data\n18. View Dashboard\n19. Launch External Dashboard\n20. Logout\n21. Exit")
 
-            choice = self.get_input("Enter choice (1-20): ")
+            choice = self.get_input("Enter choice (1-21): ")
             if choice is None:
                 continue
             if choice == '0' or choice.lower() == 'back':
